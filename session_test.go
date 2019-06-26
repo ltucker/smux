@@ -1,6 +1,7 @@
 package smux
 
 import (
+	"bytes"
 	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -92,6 +93,53 @@ func TestEcho(t *testing.T) {
 	if sent != received {
 		t.Fatal("data mimatch")
 	}
+	session.Close()
+}
+
+func TestLargeEchoDeadline(t *testing.T) {
+	_, stop, cli, err := setupServer(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	session, _ := Client(cli, nil)
+	stream, _ := session.OpenStream()
+
+	sz := DefaultConfig().MaxFrameSize * 2
+	buf1 := make([]byte, sz)
+	buf2 := make([]byte, sz)
+	io.ReadFull(crand.Reader, buf1)
+
+	// fail a write due to an expired timeout
+	if err := stream.SetWriteDeadline(time.Now().Add(-1 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	n, err := stream.Write(buf1)
+	if err.Error() != "timeout" {
+		t.Fatalf("expected timeout got n=%d err=%s", n, err)
+	}
+	err = stream.SetWriteDeadline(time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("timed out write wrote %d bytes", n)
+
+	// retry the rest of the write
+	if _, err := stream.Write(buf1[n:]); err != nil {
+		t.Fatal(err)
+	}
+	io.ReadFull(stream, buf2)
+	if !bytes.Equal(buf1, buf2) {
+		i := 0
+		for i = 0; i < len(buf1); i++ {
+			if buf1[i] != buf2[i] {
+				break
+			}
+		}
+
+		t.Fatalf("mismatch at %d: expected %v got %v (buf1[0]=%v)", i, buf1[i], buf2[i], buf1[0])
+	}
+
 	session.Close()
 }
 
